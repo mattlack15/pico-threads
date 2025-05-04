@@ -164,7 +164,7 @@ end:
 // Thread entry-point.
 void thread_stub(int thread_id) {
     uint64_t time = time_us_64();
-    hardware_alarm_set_target(0, time + TIME_QUANTUM_US);
+    hardware_alarm_set_target(alarm_num, time + TIME_QUANTUM_US);
 
     current_thread->entry();
 
