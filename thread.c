@@ -6,19 +6,15 @@
 #include "hardware/timer.h"
 #include <stdio.h>
 
-#define NUM_THREADS 16
-#define TIME_QUANTUM_US 200
-#define STACK_SIZE 4096
-
 static thread_t* current_thread = NULL;
 static thread_t* thread_list[NUM_THREADS];
 static thread_t* ready_queue[NUM_THREADS];
 static _Atomic int ready_head = 0;
 static _Atomic int ready_tail = 0;
-static _Atomic int thread_count = 0;
 static volatile int alarm_num = 0;
 static volatile long num_preemptions = 0;
 static volatile uint64_t time = 0;
+static volatile thread_t* destroy_this_thread = NULL;
 
 thread_t* get_current_thread() {
     return current_thread;
@@ -71,26 +67,38 @@ __attribute__((naked)) void switch_stack(thread_t* from, thread_t* to) {
     );
 }
 
-static void preempt_entry(uint alarm_num) {
-    hardware_alarm_cancel(alarm_num);
-    num_preemptions++;
 
-    if (current_thread->state == THREAD_SLEEPING && current_thread->permit > 0) {
-        // Thread is trying to sleep, but has permit set, so return immediately
-        current_thread->permit--;
-        current_thread->state = THREAD_RUNNING;
-        goto end;
+void thread_destroy(thread_t* thread) {
+    thread_list[thread->id] = NULL;
+    if (thread->stack) {
+        free(thread->stack);
     }
+    free(thread);
+}
 
-    // Check if there are any threads in the ready queue
-    if (ready_head == ready_tail) {
-        // No threads to run, cannot sleep either as that would cause a deadlock
-        goto end;
+void handle_zombie() {
+    // Handle the zombie thread
+    if (destroy_this_thread) {
+        thread_t* thread = (thread_t*) destroy_this_thread;
+        destroy_this_thread = NULL;
+        thread_destroy(thread);
     }
+}
 
+void thread_exit();
+
+void handle_signal() {
+    if (current_thread->signal == SIGNAL_EXIT) {
+        thread_exit();
+        assert(false);
+    }
+}
+
+// Must call with alarm disabled
+int context_switch() {
     thread_t* next_thread = ready_queue_pop();
     if (next_thread == NULL) {
-        goto end;
+        return THREAD_NONE_READY;
     }
 
     // Switch to the next thread
@@ -104,6 +112,25 @@ static void preempt_entry(uint alarm_num) {
     thread_t* prev_thread = old_thread;
 
     switch_stack(prev_thread, current_thread);
+
+    handle_zombie();
+    handle_signal();
+
+    return 0;
+}
+
+static void preempt_entry(uint alarm_num) {
+    hardware_alarm_cancel(alarm_num);
+    num_preemptions++;
+
+    if (current_thread->state == THREAD_SLEEPING && current_thread->permit > 0) {
+        // Thread is trying to sleep, but has permit set, so return immediately
+        current_thread->permit--;
+        current_thread->state = THREAD_RUNNING;
+        goto end;
+    }
+
+    context_switch();
 
     end:
 
@@ -122,8 +149,7 @@ void thread_stub(int thread_id) {
     // Call the thread's entry function
     current_thread->entry();
 
-    // TODO exit thread
-    assert(0);
+    thread_exit();
 }
 
 int thread_init() {
@@ -134,7 +160,6 @@ int thread_init() {
     // Create the first thread
     thread_t* main_thread = (thread_t*)malloc(sizeof(thread_t));
     main_thread->id = 0;
-    thread_count = 1;
     main_thread->state = THREAD_RUNNING;
     main_thread->entry = NULL;
     // Do not have to allocate stack for main thread
@@ -142,6 +167,7 @@ int thread_init() {
     main_thread->stack_size = 0;
     main_thread->permit = 0;
     main_thread->context.stack_pointer = NULL; // No context switch needed for main thread
+    main_thread->signal = SIGNAL_NONE;
     current_thread = main_thread;
     thread_list[0] = main_thread;
 
@@ -155,18 +181,42 @@ int thread_init() {
     hardware_alarm_force_irq(alarm_num);
 }
 
-thread_t* thread_create(void (*entry)(void)) {
-    if (thread_count >= 10) {
-        return NULL; // No more threads can be created
-    }
+int thread_create(void (*entry)(void)) {
     
     thread_t* new_thread = (thread_t*)malloc(sizeof(thread_t));
-    new_thread->id = atomic_fetch_add(&thread_count, 1);
+    if (new_thread == NULL) {
+        return THREAD_NO_MEMORY;
+    }
+
+    new_thread->stack = malloc(STACK_SIZE); // Allocate stack space
+    new_thread->stack_size = STACK_SIZE;
+
+    if (new_thread->stack == NULL) {
+        free(new_thread);
+        return THREAD_NO_MEMORY;
+    }
+
+    // Find a free thread slot
+    int id = -1;
+    for (int i = 0; i < NUM_THREADS; i++) {
+        thread_t* expect = NULL;
+        if (atomic_compare_exchange_strong(&thread_list[i], &expect, new_thread)) {
+            id = i;
+            break;
+        }
+    }
+
+    if (id < 0) {
+        free(new_thread);
+        free(new_thread->stack);
+        return THREAD_NO_MORE;
+    }
+    
+    new_thread->id = id;
     new_thread->state = THREAD_READY;
     new_thread->entry = entry;
     new_thread->permit = 0;
-    new_thread->stack = malloc(STACK_SIZE); // Allocate stack space
-    new_thread->stack_size = STACK_SIZE;
+    new_thread->signal = SIGNAL_NONE;
 
     // Set up that stack
     void *sp_byte = new_thread->stack + new_thread->stack_size;
@@ -195,7 +245,15 @@ thread_t* thread_create(void (*entry)(void)) {
     thread_list[new_thread->id] = new_thread;
     ready_queue_push(new_thread);
     
-    return new_thread;
+    return 0;
+}
+
+void thread_exit() {
+    hardware_alarm_cancel(alarm_num);
+    current_thread->state = THREAD_EXITED;
+    destroy_this_thread = current_thread;
+    thread_yield();
+    assert(false);
 }
 
 void thread_yield() {
