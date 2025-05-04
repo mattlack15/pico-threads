@@ -1,5 +1,5 @@
 # Pico Threads
-Pico Threads is a tiny preemptive threading library I made for the raspberry pi pico 2w. It allows you to multiplex one core of the process across up to 32 threads by default.
+Pico Threads is a tiny preemptive threading library I made for the raspberry pi pico 2w. It allows you to multiplex one core of the processor across up to 32 threads by default.
 
 ## Features
 - Preemptive multiplexing
