@@ -69,14 +69,14 @@ thread_t* ready_queue_pop() {
 
 __attribute__((naked)) void switch_stack(thread_t* from, thread_t* to) {
     __asm__ volatile (
-        "vstmdb sp!, {S16-S31}             \n"
-        "push {r4-r11, lr}                 \n"
-        "mov r2, %[sp_offset]              \n"
-        "str sp, [r0, r2]                  \n"
-        "ldr sp, [r1, r2]                  \n"
-        "pop {r4-r11, lr}                  \n"
-        "vldmia sp!, {S16-S31}             \n"
-        "bx lr                             \n"
+        "vstmdb sp!, {S16-S31}             \n" // push vfp registers (wasn't doing this at first, very hard to find bug)
+        "push {r4-r11, lr}                 \n" // push callee-saved registers (caller-saved pushed by hardware)
+        "mov r2, %[sp_offset]              \n" // offset to stack pointer in thread struct
+        "str sp, [r0, r2]                  \n" // store current stack pointer in 'from' thread
+        "ldr sp, [r1, r2]                  \n" // load new stack pointer from 'to' thread
+        "pop {r4-r11, lr}                  \n" // pop callee-saved registers
+        "vldmia sp!, {S16-S31}             \n" // pop vfp registers
+        "bx lr                             \n" // return to the new thread
         :
         : [sp_offset] "I" (offsetof(thread_t, context) + offsetof(struct thread_context, stack_pointer))
         : "r2"
