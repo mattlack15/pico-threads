@@ -232,7 +232,9 @@ int thread_create(void (*entry)(void)) {
     void *sp_byte = new_thread->stack + new_thread->stack_size;
     sp_byte -= (uint32_t) sp_byte % 16;
     uint32_t *sp = (uint32_t *)sp_byte;
-    sp -= 8;  
+    sp -= 8;
+
+    // Exception frame setup
     sp[0] = (uint32_t)   new_thread->id;     // R0 (first argument to thread_stub)
     sp[1] = (uint32_t)    0x00000000;        // R1
     sp[2] = (uint32_t)    0x00000000;        // R2
@@ -247,6 +249,11 @@ int thread_create(void (*entry)(void)) {
     for (int i = 0; i < 8; i++) {
         sp[i] = 0x00000000; // R4-R11
     }
+
+    // What will go into LR. This is the EXC_RETURN magic value for
+    // the armv8 architecture (see manual). Specifies that the hardware
+    // should pop the exception frame off the stack and return to
+    // thread-mode.
     sp[8] = (uint32_t)0xFFFFFFF9; // What will go into LR
 
     new_thread->context.stack_pointer = sp;
