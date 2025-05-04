@@ -228,7 +228,28 @@ int thread_create(void (*entry)(void)) {
     new_thread->permit = 0;
     new_thread->signal = SIGNAL_NONE;
 
-    /* Stack and context setup omitted for brevity; see original code */
+    // Set up that stack
+    void *sp_byte = new_thread->stack + new_thread->stack_size;
+    sp_byte -= (uint32_t) sp_byte % 16;
+    uint32_t *sp = (uint32_t *)sp_byte;
+    sp -= 8;  
+    sp[0] = (uint32_t)   new_thread->id;     // R0 (first argument to thread_stub)
+    sp[1] = (uint32_t)    0x00000000;        // R1
+    sp[2] = (uint32_t)    0x00000000;        // R2
+    sp[3] = (uint32_t)    0x00000000;        // R3
+    sp[4] = (uint32_t)    0x00000000;        // R12
+    sp[5] = (uint32_t)    0x00000000;        // LR TODO set to thread_exit
+    sp[6] = (uint32_t)   thread_stub;        // PC
+    sp[7] = (uint32_t)      (1U<<24);        // xPSR (Thumb bit set)
+    
+    // Extra stack when switching during stack_switch()
+    sp -= 25; // 16 are for S16-S31, 8 for R4-R11, and 1 for LR
+    for (int i = 0; i < 8; i++) {
+        sp[i] = 0x00000000; // R4-R11
+    }
+    sp[8] = (uint32_t)0xFFFFFFF9; // What will go into LR
+
+    new_thread->context.stack_pointer = sp;
 
     ready_queue_push(new_thread);
     return 0;
